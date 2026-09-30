@@ -16,7 +16,7 @@ export function mountControls(el: HTMLElement, r: MapRenderer, onPixelScale: () 
   const sync = () => {
     master.textContent = `Shaders: ${r.shadersOn ? 'ON' : 'OFF'}  [H]`;
     master.classList.toggle('off', !r.shadersOn);
-    el.querySelectorAll('input[type=checkbox]').forEach((c) => ((c as HTMLInputElement).disabled = !r.shadersOn));
+    el.querySelectorAll('input[type=checkbox]:not([data-always])').forEach((c) => ((c as HTMLInputElement).disabled = !r.shadersOn));
   };
   master.onclick = () => {
     r.shadersOn = !r.shadersOn;
@@ -33,6 +33,15 @@ export function mountControls(el: HTMLElement, r: MapRenderer, onPixelScale: () 
     row.append(cb, ' ' + LABELS[name]);
     el.appendChild(row);
   }
+
+  const fadeRow = document.createElement('label');
+  const fade = document.createElement('input');
+  fade.type = 'checkbox';
+  fade.checked = r.lodBlend;
+  fade.dataset.always = '1';
+  fade.onchange = () => (r.lodBlend = fade.checked);
+  fadeRow.append(fade, ' Smooth detail fade');
+  el.appendChild(fadeRow);
 
   const px = document.createElement('label');
   const sel = document.createElement('select');

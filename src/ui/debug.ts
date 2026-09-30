@@ -35,7 +35,8 @@ export class DebugOverlay {
     this.el.textContent =
       `zoom     ${zoomX.toFixed(2)}x  (${cam.zoom.toFixed(2)} px/mi)\n` +
       `view     ${cam.milesAcross.toFixed(1)} mi across\n` +
-      `lod      ${i.k}  ${fmtMiles(i.texelMiles)}/px  ${i.artPixel.toFixed(1)}px\n` +
+      `lod      ${i.k}  ${fmtMiles(i.texelMiles)}/px  ${i.artPixel.toFixed(1)}px` +
+      (i.blend > 0 ? `  → ${i.k + 1} ${Math.round(i.blend * 100)}%\n` : '\n') +
       `fps      ${this.fps.toFixed(0)}  (worst ${(this.worstShown * 1000).toFixed(1)} ms)\n` +
       `chunks   ${r.cache.size} cached  ${r.cache.pending} queued  ${r.cache.genMs.toFixed(1)} ms/gen` +
       cursor;

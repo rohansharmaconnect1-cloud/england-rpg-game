@@ -135,23 +135,33 @@ void main() {
 }`;
 
 /**
- * Upscale the art-pixel buffer to the screen. "Sharp bilinear": nearest-neighbour look with a
+ * Upscale the art-pixel buffers to the screen. "Sharp bilinear": nearest-neighbour look with a
  * one-screen-pixel blend at texel edges, so non-integer scales and sub-pixel camera motion stay
- * smooth with uniformly sized chunky pixels.
+ * smooth with uniformly sized chunky pixels. Two LODs are sampled and crossfaded by u_mix so detail
+ * fades in/out gradually while zooming instead of popping.
  */
 export const PRESENT_FS = /* glsl */ `#version 300 es
 precision highp float;
-uniform sampler2D u_color;
-uniform vec2 u_colorSize;
-uniform vec2 u_off;     // buffer texel coordinate at the screen's top-left corner
-uniform float u_scale;  // screen pixels per texel
+uniform sampler2D u_color0;
+uniform sampler2D u_color1;
+uniform vec2 u_size0, u_size1;
+uniform vec2 u_off0, u_off1;     // buffer texel coordinate at the screen's top-left corner
+uniform float u_scale0, u_scale1; // screen pixels per texel
+uniform float u_mix;
 uniform vec2 u_screen;
 out vec4 o;
-void main() {
-  vec2 sp = vec2(gl_FragCoord.x, u_screen.y - gl_FragCoord.y);
-  vec2 tx = u_off + sp / u_scale;
+
+vec4 sharp(sampler2D tex, vec2 size, vec2 off, float scale, vec2 sp) {
+  vec2 tx = off + sp / scale;
   vec2 b = floor(tx - 0.5);
   vec2 f = tx - 0.5 - b;
-  f = clamp((f - 0.5) * u_scale + 0.5, 0.0, 1.0);
-  o = texture(u_color, (b + 0.5 + f) / u_colorSize);
+  f = clamp((f - 0.5) * scale + 0.5, 0.0, 1.0);
+  return texture(tex, (b + 0.5 + f) / size);
+}
+
+void main() {
+  vec2 sp = vec2(gl_FragCoord.x, u_screen.y - gl_FragCoord.y);
+  vec4 c = sharp(u_color0, u_size0, u_off0, u_scale0, sp);
+  if (u_mix > 0.0) c = mix(c, sharp(u_color1, u_size1, u_off1, u_scale1, sp), u_mix);
+  o = c;
 }`;

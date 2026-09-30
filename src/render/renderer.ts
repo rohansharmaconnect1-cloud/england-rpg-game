@@ -12,15 +12,44 @@ export interface FrameInfo {
   texelMiles: number;
   /** Screen CSS pixels per art pixel this frame. */
   artPixel: number;
+  /** 0..1 weight of the next finer LOD being faded in. */
+  blend: number;
   visible: number;
   missing: number;
 }
 
+/** Fraction of each LOD's zoom range (in log2 zoom) at the end where the finer LOD fades in. */
+const BLEND_START = 0.45;
+
+/** Per-LOD render state: the low-res data + colour buffers and how they map onto the screen. */
+interface Level {
+  dataT: Target | null;
+  colorT: Target | null;
+  offX: number;
+  offY: number;
+  scale: number;
+}
+
+interface LevelView {
+  k: number;
+  t: number;
+  s: number;
+  ox: number;
+  oy: number;
+  bw: number;
+  bh: number;
+  i0: number;
+  j0: number;
+  i1: number;
+  j1: number;
+}
+
 /**
- * Pipeline per frame:
+ * Pipeline per frame, for the current LOD and (while crossfading) the next finer one:
  *   1. data pass    chunk textures -> low-res data buffer, 1 texel = 1 art pixel, world-aligned
  *   2. colour pass  data buffer -> palette colours with effects (per art pixel)
- *   3. present      sharp-bilinear upscale to the screen with the camera's sub-texel offset
+ * then
+ *   3. present      sharp-bilinear upscale of both levels to the screen, mixed by the blend weight
  */
 export class MapRenderer {
   readonly gl: WebGL2RenderingContext;
@@ -29,7 +58,9 @@ export class MapRenderer {
   pixelScale = 3;
   effects: Record<FxName, boolean> = { hillshade: true, water: true, clouds: true, dither: true, vignette: true };
   shadersOn = true;
-  info: FrameInfo = { k: 0, texelMiles: 0, artPixel: 0, visible: 0, missing: 0 };
+  /** Crossfade between detail levels while zooming (instead of a hard switch). */
+  lodBlend = true;
+  info: FrameInfo = { k: 0, texelMiles: 0, artPixel: 0, blend: 0, visible: 0, missing: 0 };
 
   private chunkProg: WebGLProgram;
   private colorProg: WebGLProgram;
@@ -40,8 +71,10 @@ export class MapRenderer {
   private quad: WebGLVertexArrayObject;
   private emptyVao: WebGLVertexArrayObject;
   private palette: WebGLTexture;
-  private dataT: Target | null = null;
-  private colorT: Target | null = null;
+  private levels: [Level, Level] = [
+    { dataT: null, colorT: null, offX: 0, offY: 0, scale: 1 },
+    { dataT: null, colorT: null, offX: 0, offY: 0, scale: 1 },
+  ];
   private cloud = [0, 0];
 
   constructor(readonly canvas: HTMLCanvasElement, raw: RawWorld, private readonly worldW: number, private readonly worldH: number) {
@@ -77,15 +110,50 @@ export class MapRenderer {
     return f;
   }
 
-  private ensureTargets(w: number, h: number) {
+  private ensureTargets(level: Level, w: number, h: number) {
     const gl = this.gl;
-    if (this.dataT && this.dataT.w >= w && this.dataT.h >= h) return;
-    const aw = Math.max(w, this.dataT?.w ?? 0);
-    const ah = Math.max(h, this.dataT?.h ?? 0);
-    if (this.dataT) deleteTarget(gl, this.dataT);
-    if (this.colorT) deleteTarget(gl, this.colorT);
-    this.dataT = createTarget(gl, aw, ah, gl.NEAREST);
-    this.colorT = createTarget(gl, aw, ah, gl.LINEAR);
+    if (level.dataT && level.dataT.w >= w && level.dataT.h >= h) return;
+    const aw = Math.max(w, level.dataT?.w ?? 0);
+    const ah = Math.max(h, level.dataT?.h ?? 0);
+    if (level.dataT) deleteTarget(gl, level.dataT);
+    if (level.colorT) deleteTarget(gl, level.colorT);
+    level.dataT = createTarget(gl, aw, ah, gl.NEAREST);
+    level.colorT = createTarget(gl, aw, ah, gl.LINEAR);
+  }
+
+  /** Buffer placement and visible chunk range for LOD k at the current camera. */
+  private viewFor(k: number, Zp: number, Wp: number, Hp: number, left: number, top: number): LevelView {
+    const t = texelMiles(k);
+    const s = Zp * t;
+    const ox = Math.floor(left / t) - 1;
+    const oy = Math.floor(top / t) - 1;
+    const bw = Math.ceil(Wp / s) + 3;
+    const bh = Math.ceil(Hp / s) + 3;
+    const cm = chunkMiles(k);
+    const nx = Math.ceil(this.worldW / cm);
+    const ny = Math.ceil(this.worldH / cm);
+    return {
+      k, t, s, ox, oy, bw, bh,
+      i0: Math.max(0, Math.floor(ox / CHUNK)),
+      j0: Math.max(0, Math.floor(oy / CHUNK)),
+      i1: Math.min(nx - 1, Math.floor((ox + bw - 1) / CHUNK)),
+      j1: Math.min(ny - 1, Math.floor((oy + bh - 1) / CHUNK)),
+    };
+  }
+
+  /** Chunks of level v that aren't cached yet, nearest to the screen centre first. */
+  private missingChunks(v: LevelView, ccx: number, ccy: number): ChunkReq[] {
+    const out: ChunkReq[] = [];
+    for (let j = v.j0; j <= v.j1; j++)
+      for (let i = v.i0; i <= v.i1; i++) {
+        const key = chunkKey(v.k, i, j);
+        if (!this.cache.has(key)) out.push({ key, k: v.k, cx: i, cy: j });
+      }
+    const cm = chunkMiles(v.k);
+    return out.sort(
+      (p, q) =>
+        Math.hypot(p.cx + 0.5 - ccx / cm, p.cy + 0.5 - ccy / cm) - Math.hypot(q.cx + 0.5 - ccx / cm, q.cy + 0.5 - ccy / cm),
+    );
   }
 
   render(cam: Camera, time: number, dt: number) {
@@ -96,51 +164,100 @@ export class MapRenderer {
     const Zp = cam.zoom * (Wp / cam.viewW);
     const P = this.pixelScale * dpr;
 
-    const k = Math.max(KMIN, Math.min(KMAX, Math.floor(1 + Math.log2(Zp / P))));
-    const t = texelMiles(k);
-    const s = Zp * t;
+    const lod = 1 + Math.log2(Zp / P);
+    const k = Math.max(KMIN, Math.min(KMAX, Math.floor(lod)));
+    const frac = lod - k;
+    let blend = 0;
+    if (this.lodBlend && k < KMAX && frac > BLEND_START) {
+      const x = Math.min(1, (frac - BLEND_START) / (1 - BLEND_START));
+      blend = x * x * (3 - 2 * x);
+    }
+
     const left = cam.cx - cam.viewW / (2 * cam.zoom);
     const top = cam.cy - cam.viewH / (2 * cam.zoom);
-    const ox = Math.floor(left / t) - 1;
-    const oy = Math.floor(top / t) - 1;
-    const bw = Math.ceil(Wp / s) + 3;
-    const bh = Math.ceil(Hp / s) + 3;
-    this.ensureTargets(bw, bh);
-    const dataT = this.dataT!;
-    const colorT = this.colorT!;
+    const ccx = cam.cx;
+    const ccy = cam.cy;
+    const v0 = this.viewFor(k, Zp, Wp, Hp, left, top);
+    const v1 = blend > 0 ? this.viewFor(k + 1, Zp, Wp, Hp, left, top) : null;
 
-    // ---- Decide which chunks to draw / request -------------------------------
-    const cm = chunkMiles(k);
-    const nx = Math.ceil(this.worldW / cm);
-    const ny = Math.ceil(this.worldH / cm);
-    const i0 = Math.max(0, Math.floor(ox / CHUNK));
-    const j0 = Math.max(0, Math.floor(oy / CHUNK));
-    const i1 = Math.min(nx - 1, Math.floor((ox + bw - 1) / CHUNK));
-    const j1 = Math.min(ny - 1, Math.floor((oy + bh - 1) / CHUNK));
+    // ---- Chunk requests: base levels, current level, then the next finer level (prefetched
+    //      before the fade starts so it's ready), then parents as quick fallbacks. -------------
+    const base: ChunkReq[] = [];
+    for (const m of [KMIN, KMIN + 1]) {
+      const n = Math.ceil(this.worldW / chunkMiles(m));
+      const nn = Math.ceil(this.worldH / chunkMiles(m));
+      for (let b = 0; b < nn; b++) for (let a = 0; a < n; a++) base.push({ key: chunkKey(m, a, b), k: m, cx: a, cy: b });
+    }
+    const want0 = this.missingChunks(v0, ccx, ccy);
+    const prefetch = k < KMAX && frac > BLEND_START - 0.2 ? this.missingChunks(v1 ?? this.viewFor(k + 1, Zp, Wp, Hp, left, top), ccx, ccy) : [];
+    const parents = k > KMIN ? this.missingChunks(this.viewFor(k - 1, Zp, Wp, Hp, left, top), ccx, ccy) : [];
+    const want = blend > 0.5 ? [...base, ...prefetch, ...want0, ...parents] : [...base, ...want0, ...prefetch, ...parents];
+    this.cache.want(want);
+    this.cache.update();
 
+    this.cloud[0] += (dt * 7) / cam.zoom;
+    this.cloud[1] += (dt * 2.5) / cam.zoom;
+
+    this.renderLevel(this.levels[0], v0, left, top, time);
+    if (v1) this.renderLevel(this.levels[1], v1, left, top, time);
+
+    this.info = {
+      k,
+      texelMiles: v0.t,
+      artPixel: v0.s / dpr,
+      blend,
+      visible: (v0.i1 - v0.i0 + 1) * (v0.j1 - v0.j0 + 1),
+      missing: want0.length,
+    };
+
+    // ---- 3. Present --------------------------------------------------------
+    const [a, b] = this.levels;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, Wp, Hp);
+    gl.useProgram(this.presentProg);
+    gl.bindVertexArray(this.emptyVao);
+    const up = this.uPresent;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, a.colorT!.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, (v1 ? b : a).colorT!.tex);
+    gl.uniform1i(up.u_color0, 0);
+    gl.uniform1i(up.u_color1, 1);
+    gl.uniform2f(up.u_size0, a.colorT!.w, a.colorT!.h);
+    gl.uniform2f(up.u_off0, a.offX, a.offY);
+    gl.uniform1f(up.u_scale0, a.scale);
+    const bb = v1 ? b : a;
+    gl.uniform2f(up.u_size1, bb.colorT!.w, bb.colorT!.h);
+    gl.uniform2f(up.u_off1, bb.offX, bb.offY);
+    gl.uniform1f(up.u_scale1, bb.scale);
+    gl.uniform1f(up.u_mix, v1 ? blend : 0);
+    gl.uniform2f(up.u_screen, Wp, Hp);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** Data pass + colour pass for one LOD into the given level's buffers. */
+  private renderLevel(level: Level, v: LevelView, left: number, top: number, time: number) {
+    const gl = this.gl;
+    const { k, t, s, ox, oy, bw, bh } = v;
+    this.ensureTargets(level, bw, bh);
+    const dataT = level.dataT!;
+    const colorT = level.colorT!;
+
+    // Cached chunks for this level, with the nearest cached ancestor standing in for missing ones.
     const draws: { key: string; m: number; a: number; b: number }[] = [];
     const fallback = new Map<string, { m: number; a: number; b: number }>();
-    const want: ChunkReq[] = [];
-    const parentWant = new Map<string, ChunkReq>();
-    const ccx = (left + cam.viewW / (2 * cam.zoom)) / cm;
-    const ccy = (top + cam.viewH / (2 * cam.zoom)) / cm;
-    let missing = 0;
-
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
+    for (let j = v.j0; j <= v.j1; j++) {
+      for (let i = v.i0; i <= v.i1; i++) {
         const key = chunkKey(k, i, j);
         if (this.cache.get(key)) {
           draws.push({ key, m: k, a: i, b: j });
           continue;
         }
-        missing++;
-        want.push({ key, k, cx: i, cy: j });
         for (let m = k - 1; m >= KMIN; m--) {
           const sh = k - m;
           const a = i >> sh;
           const b = j >> sh;
           const pk = chunkKey(m, a, b);
-          if (m === k - 1 && !parentWant.has(pk)) parentWant.set(pk, { key: pk, k: m, cx: a, cy: b });
           if (this.cache.get(pk)) {
             fallback.set(pk, { m, a, b });
             break;
@@ -148,16 +265,6 @@ export class MapRenderer {
         }
       }
     }
-    want.sort((p, q) => Math.hypot(p.cx + 0.5 - ccx, p.cy + 0.5 - ccy) - Math.hypot(q.cx + 0.5 - ccx, q.cy + 0.5 - ccy));
-    const base: ChunkReq[] = [];
-    for (const m of [KMIN, KMIN + 1]) {
-      const n = Math.ceil(this.worldW / chunkMiles(m));
-      const nn = Math.ceil(this.worldH / chunkMiles(m));
-      for (let b = 0; b < nn; b++) for (let a = 0; a < n; a++) base.push({ key: chunkKey(m, a, b), k: m, cx: a, cy: b });
-    }
-    this.cache.want([...base, ...want, ...parentWant.values()]);
-    this.cache.update();
-    this.info = { k, texelMiles: t, artPixel: s / dpr, visible: (i1 - i0 + 1) * (j1 - j0 + 1), missing };
 
     // ---- 1. Data pass ------------------------------------------------------
     gl.disable(gl.BLEND);
@@ -182,8 +289,8 @@ export class MapRenderer {
     for (const d of draws) drawChunk(d.key, d.m, d.a, d.b);
 
     // ---- 2. Colour pass ----------------------------------------------------
-    this.cloud[0] += (dt * 7) / cam.zoom;
-    this.cloud[1] += (dt * 2.5) / cam.zoom;
+    const Wp = this.canvas.width;
+    const Hp = this.canvas.height;
     const offX = left / t - ox;
     const offY = top / t - oy;
     gl.bindFramebuffer(gl.FRAMEBUFFER, colorT.fbo);
@@ -208,18 +315,8 @@ export class MapRenderer {
     gl.uniform2f(u.u_world, this.worldW, this.worldH);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // ---- 3. Present --------------------------------------------------------
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, Wp, Hp);
-    gl.useProgram(this.presentProg);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, colorT.tex);
-    const up = this.uPresent;
-    gl.uniform1i(up.u_color, 0);
-    gl.uniform2f(up.u_colorSize, colorT.w, colorT.h);
-    gl.uniform2f(up.u_off, offX, offY);
-    gl.uniform1f(up.u_scale, s);
-    gl.uniform2f(up.u_screen, Wp, Hp);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    level.offX = offX;
+    level.offY = offY;
+    level.scale = s;
   }
 }
