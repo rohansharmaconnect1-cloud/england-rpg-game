@@ -1,0 +1,25 @@
+{
+  "source": "Natural Earth 1:10m admin-0 map units, rivers+lake centerlines, rivers Europe supplement (public domain)",
+  "cell": 0.5,
+  "gridW": 1090,
+  "gridH": 1009,
+  "sdfScale": 0.01,
+  "worldW": 545,
+  "worldH": 504.3570000000003,
+  "englandBounds": [
+    101.72,
+    54.89,
+    453.66,
+    462.24
+  ],
+  "regions": [
+    "Sea",
+    "England",
+    "Wales",
+    "Scotland",
+    "Northern Ireland",
+    "Ireland",
+    "Isle of Man",
+    "The Continent"
+  ]
+}
