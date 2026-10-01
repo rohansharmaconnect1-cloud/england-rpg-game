@@ -46,6 +46,14 @@ export class Camera {
     this.clampCenter();
   }
 
+  lookAt(x: number, y: number, zoom?: number) {
+    this.cx = x;
+    this.cy = y;
+    if (zoom != null) this.zoom = this.targetZoom = clamp(zoom, this.minZoom, this.maxZoom);
+    this.anchored = false;
+    this.clampCenter();
+  }
+
   fitAll() {
     this.cx = (this.fit.x0 + this.fit.x1) / 2;
     this.cy = (this.fit.y0 + this.fit.y1) / 2;

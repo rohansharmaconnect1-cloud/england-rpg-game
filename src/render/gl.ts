@@ -58,6 +58,47 @@ export function createTarget(gl: WebGL2RenderingContext, w: number, h: number, f
   return { fbo, tex, w, h };
 }
 
+/** Recreate a target if its size changed. */
+export function ensureTarget(
+  gl: WebGL2RenderingContext,
+  t: Target | null,
+  w: number,
+  h: number,
+  filter: number,
+): Target {
+  if (t && t.w === w && t.h === h) return t;
+  if (t) deleteTarget(gl, t);
+  return createTarget(gl, w, h, filter);
+}
+
+export function updateTexture(
+  gl: WebGL2RenderingContext,
+  tex: WebGLTexture,
+  w: number,
+  h: number,
+  data: ArrayBufferView,
+  filter: number = gl.NEAREST,
+) {
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+function packR8(src: Uint8Array): Uint8Array {
+  const out = new Uint8Array(src.length * 4);
+  for (let i = 0; i < src.length; i++) {
+    out[i * 4] = src[i];
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+export { packR8 };
+
 export function deleteTarget(gl: WebGL2RenderingContext, t: Target) {
   gl.deleteFramebuffer(t.fbo);
   gl.deleteTexture(t.tex);

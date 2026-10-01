@@ -1,11 +1,11 @@
 {
   "source": "Natural Earth 1:10m admin-0 map units, rivers+lake centerlines, rivers Europe supplement (public domain)",
   "cell": 0.5,
-  "gridW": 1090,
-  "gridH": 1009,
+  "gridW": 1280,
+  "gridH": 1859,
   "sdfScale": 0.01,
-  "worldW": 545,
-  "worldH": 504.3570000000003,
+  "worldW": 640,
+  "worldH": 929.2605000000002,
   "englandBounds": [
     101.72,
     54.89,

@@ -88,3 +88,27 @@ export function labelSprite(text: string, ink: string, halo: string): HTMLCanvas
   cache.set(key, c);
   return c;
 }
+
+/** Town name on a parchment chip so it stays readable over terrain. */
+export function labelChip(text: string, ink: string, fill: string, border: string): HTMLCanvasElement {
+  const key = `chip|${text}|${ink}|${fill}|${border}`;
+  let c = cache.get(key);
+  if (c) return c;
+  const padX = 3;
+  const padY = 2;
+  const tw = measurePixelText(text);
+  c = document.createElement('canvas');
+  c.width = tw + padX * 2;
+  c.height = FONT_H + padY * 2;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = border;
+  ctx.fillRect(0, 0, c.width, 1);
+  ctx.fillRect(0, c.height - 1, c.width, 1);
+  ctx.fillRect(0, 0, 1, c.height);
+  ctx.fillRect(c.width - 1, 0, 1, c.height);
+  drawPixelText(ctx, text, padX, padY, ink);
+  cache.set(key, c);
+  return c;
+}

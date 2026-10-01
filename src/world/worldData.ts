@@ -186,6 +186,23 @@ export class WorldData {
     return this.sampleSdf(this.engSdf, x, y);
   }
 
+  /** Region id at (x, y); on raster-coast cells that read as sea, the nearest land cell within ~1 mile. */
+  regionIdNear(x: number, y: number): number {
+    const { cell, gridW, gridH } = this.meta;
+    const ix = Math.floor(x / cell);
+    const iy = Math.floor(y / cell);
+    for (let r = 0; r <= 2; r++)
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          const jx = ix + dx;
+          const jy = iy + dy;
+          if (jx < 0 || jy < 0 || jx >= gridW || jy >= gridH) continue;
+          const v = this.region[jy * gridW + jx];
+          if (v) return v;
+        }
+    return 0;
+  }
+
   regionAt(x: number, y: number): string {
     const { cell, gridW, gridH, regions } = this.meta;
     const ix = Math.floor(x / cell);

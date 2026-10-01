@@ -15,7 +15,7 @@ export const HEIGHT_OFFSET = 300;
 export const HEIGHT_STEPS = 40;
 
 const sub = (n: number) => hash32(WORLD_SEED, n, 0x51ed) & 0x7fffffff;
-const S_COAST = sub(1), S_BORDER = sub(2), S_WARP = sub(3), S_BASE = sub(4), S_ROLL = sub(5), S_RIDGE = sub(6),
+const S_COAST = sub(1), S_WARP = sub(3), S_BASE = sub(4), S_ROLL = sub(5), S_RIDGE = sub(6),
   S_DETAIL = sub(7), S_WILD = sub(9), S_PATCH = sub(10), S_PATCH2 = sub(11), S_FIELD = sub(12),
   S_FIELDROT = sub(13), S_TREE = sub(14), S_SCATTER = sub(15), S_STREAM = sub(16), S_STREAMMASK = sub(17),
   S_POOL = sub(18), S_MOOR = sub(19), S_TUFT = sub(20), S_MEANDER = sub(21), S_BEACH = sub(22), S_SEA = sub(23),
@@ -25,6 +25,9 @@ const UP = compile(UPLANDS);
 const FO = compile(FORESTS);
 const FE = compile(FENS);
 const LK = compile(LAKES);
+
+/** Ireland, Ulster and Man stay on the muted FOREIGN ramp; Wales, Scotland and France are tinted in the shader. */
+const MUTED_REGION = new Set([4, 5, 6]);
 
 /** How far terrain features get pushed around by the large-scale domain warp, in miles. */
 const WARP = 5;
@@ -90,10 +93,8 @@ export class TerrainGenerator {
 
         // ---- Nationality ----------------------------------------------------
         const engRaw = world.england(x, y);
-        const eng = engRaw + fbmLod(x, y, S_BORDER, 1 / 3, 5, t) * 0.3;
         const inland = landRaw - engRaw > 0.02;
-        const foreign = eng < 0 && inland;
-        const onBorder = inland && landRaw - Math.abs(engRaw) > 0.5 && Math.abs(eng) < Math.max(0.03, 0.55 * t);
+        const foreign = inland && MUTED_REGION.has(world.regionIdNear(x, y));
 
         // ---- Large-scale landscape regions ----------------------------------
         const wx = x + perlin(x / 18, y / 18, S_WARP) * WARP;
@@ -153,9 +154,6 @@ export class TerrainGenerator {
         const roughness = 90 * n1 + 55 * fbmLod(x, y, S_MOOR + 9, 1, 5, t);
         if (rivers.water < 0 || lake) {
           mat = Mat.River;
-        } else if (onBorder && k >= 0) {
-          mat = Mat.Border;
-          tone = 3;
         } else if (k >= 2 && sdf < Math.max(0.07, 0.6 * t) && h < 40 && perlin(x / 4, y / 4, S_BEACH) > -0.2) {
           mat = Mat.Sand;
           if (k >= 5) tone = 4 + (hash01(ix, iy, S_TUFT) < 0.1 ? 1 : 0);

@@ -57,6 +57,17 @@ export const UPLANDS: Region[] = [
   { name: 'Isle of Man', pts: [[-4.5, 54.25]], rx: 4, ry: 6, value: 600 },
   { name: 'Mourne Mountains', pts: [[-6.0, 54.17]], rx: 7, ry: 5, value: 750 },
   { name: 'Wicklow Mountains', pts: [[-6.4, 53.05]], rx: 15, ry: 20, value: 850 },
+  // The Continent
+  { name: 'Boulonnais', pts: [[1.8, 50.72]], rx: 9, ry: 7, value: 190 },
+  { name: 'Artois hills', pts: [[1.9, 50.5], [2.4, 50.45]], rx: 10, ry: 10, value: 200 },
+  { name: 'Flemish hills', pts: [[2.5, 50.79], [2.75, 50.78]], rx: 4, ry: 4, value: 160 },
+  { name: 'Pays de Caux', pts: [[0.5, 49.65], [1.2, 49.8]], rx: 14, ry: 14, value: 140 },
+  { name: 'Brabant plateau', pts: [[4.4, 50.7], [5.2, 50.75]], rx: 16, ry: 12, value: 130 },
+  { name: 'Veluwe', pts: [[5.85, 52.15]], rx: 14, ry: 12, value: 100 },
+  { name: 'Armorican massif', pts: [[-3.6, 48.25], [-2.8, 48.5]], rx: 28, ry: 18, value: 280 },
+  { name: 'Norman hills', pts: [[0.6, 48.9], [0.2, 48.7]], rx: 16, ry: 12, value: 160 },
+  { name: 'Western Pyrenees', pts: [[-1.35, 43.2], [-0.6, 43.05]], rx: 20, ry: 14, value: 1100 },
+  { name: 'Landes plateau', pts: [[-0.9, 44.2]], rx: 22, ry: 18, value: 80 },
 ];
 
 export const FORESTS: Region[] = [
@@ -87,6 +98,19 @@ export const FORESTS: Region[] = [
   { name: 'Blackmore Vale', pts: [[-2.35, 50.9]], rx: 6, ry: 4, value: 0.75 },
   { name: 'Hatfield Forest', pts: [[0.23, 51.85]], rx: 2.5, ry: 2.5, value: 0.8 },
   { name: 'Kielder', pts: [[-2.55, 55.2]], rx: 8, ry: 6, value: 0.6 },
+  // The Continent
+  { name: 'Forêt de Crécy', pts: [[1.88, 50.25]], rx: 6, ry: 4, value: 1 },
+  { name: 'Forêt de Hardelot', pts: [[1.68, 50.62]], rx: 3, ry: 4, value: 0.9 },
+  { name: 'Forêt de Nieppe', pts: [[2.55, 50.7]], rx: 4, ry: 3, value: 0.9 },
+  { name: "Forêt d'Eu", pts: [[1.5, 49.95]], rx: 6, ry: 4, rot: 30, value: 0.9 },
+  { name: 'Forêt de Lyons', pts: [[1.45, 49.42]], rx: 8, ry: 6, value: 1 },
+  { name: 'Sonian Forest', pts: [[4.43, 50.76]], rx: 7, ry: 6, value: 1 },
+  { name: 'Houthulst', pts: [[2.95, 50.98]], rx: 3, ry: 3, value: 0.85 },
+  { name: 'Kempen heath woods', pts: [[5.1, 51.2]], rx: 16, ry: 9, value: 0.7 },
+  { name: 'Brocéliande', pts: [[-2.3, 48.0]], rx: 16, ry: 12, value: 0.85 },
+  { name: 'Forêt de Roumare', pts: [[0.95, 49.45]], rx: 6, ry: 4, value: 0.9 },
+  { name: 'Landes woods', pts: [[-0.7, 44.4]], rx: 28, ry: 22, value: 0.55 },
+  { name: 'Périgord woods', pts: [[0.7, 45.15]], rx: 18, ry: 14, value: 0.7 },
 ];
 
 export const FENS: Region[] = [
@@ -97,6 +121,13 @@ export const FENS: Region[] = [
   { name: 'Romney Marsh', pts: [[0.9, 51.0]], rx: 5, ry: 4, value: 1 },
   { name: 'The Broads', pts: [[1.55, 52.68]], rx: 6, ry: 5, value: 0.85 },
   { name: 'Lancashire mosses', pts: [[-2.95, 53.6]], rx: 5, ry: 6, value: 0.75 },
+  // The Continent
+  { name: 'Zeeland polders', pts: [[3.45, 51.33], [3.9, 51.5], [4.1, 51.62]], rx: 8, ry: 8, value: 1 },
+  { name: 'Holland peat', pts: [[4.3, 51.85], [4.6, 52.1]], rx: 10, ry: 10, value: 0.9 },
+  { name: 'Les Moëres', pts: [[2.55, 51.02]], rx: 5, ry: 3, value: 1 },
+  { name: 'Flemish coastal plain', pts: [[2.4, 51.02], [2.9, 51.15], [3.2, 51.28]], rx: 4, ry: 4, value: 0.85 },
+  { name: 'Baie de Somme', pts: [[1.62, 50.22]], rx: 5, ry: 4, value: 0.9 },
+  { name: 'Marais poitevin', pts: [[-0.9, 46.3]], rx: 14, ry: 8, value: 0.8 },
 ];
 
 /** Real lakes too small for Natural Earth at 1:10m. rx = half-width in miles along the axis `pts`. */

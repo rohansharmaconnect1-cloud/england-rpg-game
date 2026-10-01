@@ -3,9 +3,10 @@ import { CHUNK, KMAX, KMIN, chunkKey, chunkMiles, texelMiles } from '../world/lo
 import { MATERIAL_COUNT, TONES } from '../world/materials';
 import type { RawWorld } from '../world/worldData';
 import { ChunkCache, type ChunkReq } from './chunkCache';
-import { compileProgram, createTarget, createTexture, deleteTarget, uniforms, type Target } from './gl';
-import { buildPalette } from './palette';
-import { CHUNK_FS, CHUNK_VS, COLOR_FS, FULLSCREEN_VS, PRESENT_FS, FX, type FxName } from './shaders';
+import { compileProgram, createTarget, createTexture, deleteTarget, ensureTarget, packR8, updateTexture, uniforms, type Target } from './gl';
+import { buildPalette, type MapSeason } from './palette';
+import { C, rgb } from '../assets/palette';
+import { BLUR_FS, CHUNK_FS, CHUNK_VS, COLOR_FS, EXTRACT_FS, FULLSCREEN_VS, POST_FS, PRESENT_FS, FX, type FxName } from './shaders';
 
 export interface FrameInfo {
   k: number;
@@ -16,6 +17,8 @@ export interface FrameInfo {
   blend: number;
   visible: number;
   missing: number;
+  /** 0 = grade only, 1 = bloom, 2 = bloom + tilt-shift. */
+  quality: number;
 }
 
 /** Fraction of each LOD's zoom range (in log2 zoom) at the end where the finer LOD fades in. */
@@ -49,7 +52,8 @@ interface LevelView {
  *   1. data pass    chunk textures -> low-res data buffer, 1 texel = 1 art pixel, world-aligned
  *   2. colour pass  data buffer -> palette colours with effects (per art pixel)
  * then
- *   3. present      sharp-bilinear upscale of both levels to the screen, mixed by the blend weight
+ *   3. present      sharp-bilinear upscale to a full-res buffer (pixels stay chunky)
+ *   4. post         bloom, tilt-shift, haze and clock grade at screen resolution
  */
 export class MapRenderer {
   readonly gl: WebGL2RenderingContext;
@@ -60,17 +64,47 @@ export class MapRenderer {
   shadersOn = true;
   /** Crossfade between detail levels while zooming (instead of a hard switch). */
   lodBlend = true;
-  info: FrameInfo = { k: 0, texelMiles: 0, artPixel: 0, blend: 0, visible: 0, missing: 0 };
+  /** HD-2D colour grade applied at present (day/night, weather). */
+  grade: [number, number, number] = [1, 1, 1];
+  lift: [number, number, number] = [0, 0, 0];
+  regionsOn = true;
+  fogOn = true;
+  /** Master HD-2D post pass. */
+  postOn = true;
+  post = { glow: 0.22, dof: 0.16, vignette: 0.26, golden: 0, night: 0, reduceMotion: false };
+  info: FrameInfo = { k: 0, texelMiles: 0, artPixel: 0, blend: 0, visible: 0, missing: 0, quality: 2 };
 
   private chunkProg: WebGLProgram;
   private colorProg: WebGLProgram;
   private presentProg: WebGLProgram;
+  private extractProg: WebGLProgram;
+  private blurProg: WebGLProgram;
+  private postProg: WebGLProgram;
   private uChunk: Record<string, WebGLUniformLocation>;
   private uColor: Record<string, WebGLUniformLocation>;
   private uPresent: Record<string, WebGLUniformLocation>;
+  private uExtract: Record<string, WebGLUniformLocation>;
+  private uBlur: Record<string, WebGLUniformLocation>;
+  private uPost: Record<string, WebGLUniformLocation>;
   private quad: WebGLVertexArrayObject;
   private emptyVao: WebGLVertexArrayObject;
   private palette: WebGLTexture;
+  private regionTex: WebGLTexture;
+  private fogTex: WebGLTexture;
+  private regionW: number;
+  private regionH: number;
+  private season: MapSeason = 'Spring';
+  private sceneT: Target | null = null;
+  private glowA: Target | null = null;
+  private glowB: Target | null = null;
+  private dofA: Target | null = null;
+  private dofB: Target | null = null;
+  private quality = 2;
+  private qualityMax = 2;
+  private emaDt = 0.016;
+  private slowFrames = 0;
+  private fastFrames = 0;
+  private warmFrames = 0;
   private levels: [Level, Level] = [
     { dataT: null, colorT: null, offX: 0, offY: 0, scale: 1 },
     { dataT: null, colorT: null, offX: 0, offY: 0, scale: 1 },
@@ -84,9 +118,15 @@ export class MapRenderer {
     this.chunkProg = compileProgram(gl, CHUNK_VS, CHUNK_FS);
     this.colorProg = compileProgram(gl, FULLSCREEN_VS, COLOR_FS);
     this.presentProg = compileProgram(gl, FULLSCREEN_VS, PRESENT_FS);
+    this.extractProg = compileProgram(gl, FULLSCREEN_VS, EXTRACT_FS);
+    this.blurProg = compileProgram(gl, FULLSCREEN_VS, BLUR_FS);
+    this.postProg = compileProgram(gl, FULLSCREEN_VS, POST_FS);
     this.uChunk = uniforms(gl, this.chunkProg);
     this.uColor = uniforms(gl, this.colorProg);
     this.uPresent = uniforms(gl, this.presentProg);
+    this.uExtract = uniforms(gl, this.extractProg);
+    this.uBlur = uniforms(gl, this.blurProg);
+    this.uPost = uniforms(gl, this.postProg);
 
     this.quad = gl.createVertexArray()!;
     gl.bindVertexArray(this.quad);
@@ -100,13 +140,36 @@ export class MapRenderer {
     gl.bindVertexArray(null);
 
     this.palette = createTexture(gl, TONES, MATERIAL_COUNT, buildPalette());
+    this.regionW = raw.meta.gridW;
+    this.regionH = raw.meta.gridH;
+    this.regionTex = createTexture(gl, this.regionW, this.regionH, packR8(new Uint8Array(raw.region)));
+    this.fogTex = createTexture(gl, 1, 1, new Uint8Array([255, 0, 0, 255]), gl.LINEAR);
     this.cache = new ChunkCache(gl, raw);
+    this.qualityMax = gpuQuality(gl);
+    this.quality = this.qualityMax;
+    this.info.quality = this.quality;
+  }
+
+  setSeason(season: MapSeason) {
+    if (season === this.season) return;
+    this.season = season;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.palette);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TONES, MATERIAL_COUNT, gl.RGBA, gl.UNSIGNED_BYTE, buildPalette(season));
+  }
+
+  setFog(data: Uint8Array, w: number, h: number) {
+    updateTexture(this.gl, this.fogTex, w, h, data, this.gl.LINEAR);
   }
 
   private flags(): number {
     if (!this.shadersOn) return 0;
     let f = 0;
-    for (const [name, on] of Object.entries(this.effects)) if (on) f |= FX[name as FxName];
+    for (const [name, on] of Object.entries(this.effects)) {
+      if (!on) continue;
+      if (name === 'vignette' && this.postOn && this.quality > 0) continue;
+      f |= FX[name as FxName];
+    }
     return f;
   }
 
@@ -157,7 +220,6 @@ export class MapRenderer {
   }
 
   render(cam: Camera, time: number, dt: number) {
-    const gl = this.gl;
     const dpr = window.devicePixelRatio || 1;
     const Wp = this.canvas.width;
     const Hp = this.canvas.height;
@@ -208,31 +270,11 @@ export class MapRenderer {
       blend,
       visible: (v0.i1 - v0.i0 + 1) * (v0.j1 - v0.j0 + 1),
       missing: want0.length,
+      quality: this.quality,
     };
 
-    // ---- 3. Present --------------------------------------------------------
-    const [a, b] = this.levels;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, Wp, Hp);
-    gl.useProgram(this.presentProg);
-    gl.bindVertexArray(this.emptyVao);
-    const up = this.uPresent;
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, a.colorT!.tex);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, (v1 ? b : a).colorT!.tex);
-    gl.uniform1i(up.u_color0, 0);
-    gl.uniform1i(up.u_color1, 1);
-    gl.uniform2f(up.u_size0, a.colorT!.w, a.colorT!.h);
-    gl.uniform2f(up.u_off0, a.offX, a.offY);
-    gl.uniform1f(up.u_scale0, a.scale);
-    const bb = v1 ? b : a;
-    gl.uniform2f(up.u_size1, bb.colorT!.w, bb.colorT!.h);
-    gl.uniform2f(up.u_off1, bb.offX, bb.offY);
-    gl.uniform1f(up.u_scale1, bb.scale);
-    gl.uniform1f(up.u_mix, v1 ? blend : 0);
-    gl.uniform2f(up.u_screen, Wp, Hp);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.tuneQuality(dt);
+    this.present(v1 ? blend : 0, time, Wp, Hp);
   }
 
   /** Data pass + colour pass for one LOD into the given level's buffers. */
@@ -301,9 +343,15 @@ export class MapRenderer {
     gl.bindTexture(gl.TEXTURE_2D, dataT.tex);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.palette);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.regionTex);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.fogTex);
     const u = this.uColor;
     gl.uniform1i(u.u_data, 0);
     gl.uniform1i(u.u_pal, 1);
+    gl.uniform1i(u.u_region, 2);
+    gl.uniform1i(u.u_fog, 3);
     gl.uniform2f(u.u_origin, ox, oy);
     gl.uniform2i(u.u_size, bw, bh);
     gl.uniform1f(u.u_texel, t);
@@ -313,10 +361,177 @@ export class MapRenderer {
     gl.uniform1f(u.u_exag, 2.5 * Math.pow(t / 0.03125, 0.55));
     gl.uniform4f(u.u_vig, s / Wp, s / Hp, offX, offY);
     gl.uniform2f(u.u_world, this.worldW, this.worldH);
+    gl.uniform2f(u.u_regionSize, this.regionW, this.regionH);
+    gl.uniform1i(u.u_regionsOn, this.regionsOn ? 1 : 0);
+    gl.uniform1i(u.u_fogOn, this.fogOn ? 1 : 0);
+    const parch = rgb(C.parchmentLight);
+    const ink = rgb(C.ink);
+    gl.uniform3f(u.u_parchment, parch[0] / 255, parch[1] / 255, parch[2] / 255);
+    gl.uniform3f(u.u_ink, ink[0] / 255, ink[1] / 255, ink[2] / 255);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     level.offX = offX;
     level.offY = offY;
     level.scale = s;
   }
+
+  private tuneQuality(dt: number) {
+    if (!this.postOn) return;
+    if (this.warmFrames < 180) {
+      this.warmFrames++;
+      return;
+    }
+    if (this.info.missing > 4) return;
+    this.emaDt = this.emaDt * 0.92 + dt * 0.08;
+    if (this.emaDt > 0.024) {
+      this.slowFrames++;
+      this.fastFrames = 0;
+    } else if (this.emaDt < 0.015) {
+      this.fastFrames++;
+      this.slowFrames = 0;
+    } else {
+      this.slowFrames = 0;
+      this.fastFrames = 0;
+    }
+    if (this.quality > 1 && this.slowFrames > 60) {
+      this.quality--;
+      this.slowFrames = 0;
+    } else if (this.quality === 1 && this.slowFrames > 120 && this.emaDt > 0.03) {
+      this.quality = 0;
+      this.slowFrames = 0;
+    } else if (this.fastFrames > 180 && this.quality < this.qualityMax) {
+      this.quality++;
+      this.fastFrames = 0;
+    }
+  }
+
+  /** Chunky upscale, then (if HD-2D is on) a full-res light pass. */
+  private present(mix: number, time: number, Wp: number, Hp: number) {
+    const usePost = this.postOn && this.quality > 0;
+    this.drawPresent(usePost, mix, Wp, Hp);
+    if (usePost) this.drawPost(time, Wp, Hp);
+  }
+
+  private drawPresent(toFbo: boolean, mix: number, Wp: number, Hp: number) {
+    const gl = this.gl;
+    const [a, b] = this.levels;
+    const hi = mix > 0 ? b : a;
+    if (toFbo) {
+      this.sceneT = ensureTarget(gl, this.sceneT, Wp, Hp, gl.NEAREST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneT.fbo);
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+    gl.viewport(0, 0, Wp, Hp);
+    gl.useProgram(this.presentProg);
+    gl.bindVertexArray(this.emptyVao);
+    const up = this.uPresent;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, a.colorT!.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, hi.colorT!.tex);
+    gl.uniform1i(up.u_color0, 0);
+    gl.uniform1i(up.u_color1, 1);
+    gl.uniform2f(up.u_size0, a.colorT!.w, a.colorT!.h);
+    gl.uniform2f(up.u_off0, a.offX, a.offY);
+    gl.uniform1f(up.u_scale0, a.scale);
+    gl.uniform2f(up.u_size1, hi.colorT!.w, hi.colorT!.h);
+    gl.uniform2f(up.u_off1, hi.offX, hi.offY);
+    gl.uniform1f(up.u_scale1, hi.scale);
+    gl.uniform1f(up.u_mix, mix);
+    gl.uniform2f(up.u_screen, Wp, Hp);
+    gl.uniform3f(up.u_grade, this.grade[0], this.grade[1], this.grade[2]);
+    gl.uniform3f(up.u_lift, this.lift[0], this.lift[1], this.lift[2]);
+    gl.uniform1i(up.u_post, toFbo ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  private drawPost(time: number, Wp: number, Hp: number) {
+    const gl = this.gl;
+    const scene = this.sceneT!;
+    const div = this.quality >= 2 ? 2 : 4;
+    const gw = Math.max(2, (Wp / div) | 0);
+    const gh = Math.max(2, (Hp / div) | 0);
+    this.glowA = ensureTarget(gl, this.glowA, gw, gh, gl.LINEAR);
+    this.glowB = ensureTarget(gl, this.glowB, gw, gh, gl.LINEAR);
+
+    this.blitExtract(scene, this.glowA, 1);
+    this.blitBlur(this.glowA, this.glowB, 1 / gw, 0);
+    this.blitBlur(this.glowB, this.glowA, 0, 1 / gh);
+
+    let soft: Target = scene;
+    if (this.quality >= 2 && this.post.dof > 0.008) {
+      this.dofA = ensureTarget(gl, this.dofA, gw, gh, gl.LINEAR);
+      this.dofB = ensureTarget(gl, this.dofB, gw, gh, gl.LINEAR);
+      this.blitExtract(scene, this.dofA, 0);
+      this.blitBlur(this.dofA, this.dofB, 1 / gw, 0);
+      this.blitBlur(this.dofB, this.dofA, 0, 1 / gh);
+      soft = this.dofA;
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, Wp, Hp);
+    gl.useProgram(this.postProg);
+    gl.bindVertexArray(this.emptyVao);
+    const u = this.uPost;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, scene.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.glowA.tex);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, soft.tex);
+    gl.uniform1i(u.u_scene, 0);
+    gl.uniform1i(u.u_bloom, 1);
+    gl.uniform1i(u.u_soft, 2);
+    gl.uniform2f(u.u_screen, Wp, Hp);
+    gl.uniform1f(u.u_glow, this.post.glow);
+    gl.uniform1f(u.u_dof, this.post.dof);
+    gl.uniform1f(u.u_vignette, this.post.vignette);
+    gl.uniform1f(u.u_golden, this.post.golden);
+    gl.uniform1f(u.u_night, this.post.night);
+    gl.uniform1f(u.u_time, this.post.reduceMotion ? 0 : time);
+    gl.uniform3f(u.u_grade, this.grade[0], this.grade[1], this.grade[2]);
+    gl.uniform3f(u.u_lift, this.lift[0], this.lift[1], this.lift[2]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  private blitExtract(src: Target, dst: Target, emit: number) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, dst.w, dst.h);
+    gl.useProgram(this.extractProg);
+    gl.bindVertexArray(this.emptyVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(this.uExtract.u_tex, 0);
+    gl.uniform2f(this.uExtract.u_size, dst.w, dst.h);
+    gl.uniform1i(this.uExtract.u_emit, emit);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  private blitBlur(src: Target, dst: Target, dx: number, dy: number) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, dst.w, dst.h);
+    gl.useProgram(this.blurProg);
+    gl.bindVertexArray(this.emptyVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(this.uBlur.u_tex, 0);
+    gl.uniform2f(this.uBlur.u_size, dst.w, dst.h);
+    gl.uniform2f(this.uBlur.u_texel, dx, dy);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+}
+
+/** Start the HD-2D pass low on software or older integrated GPUs; the frame tuner may still drop further. */
+function gpuQuality(gl: WebGL2RenderingContext): number {
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (maxTex < 4096) return 0;
+  if (/swiftshader|llvmpipe|softpipe|microsoft basic render|gdi generic|d3d11warp/i.test(gpu)) return 0;
+  if (/intel.*\b(hd|uhd) graphics/i.test(gpu) && !/iris|arc/i.test(gpu)) return 1;
+  if (/mali-[t0-4]|adreno \(tm\) [0-5]/i.test(gpu)) return 1;
+  return 2;
 }

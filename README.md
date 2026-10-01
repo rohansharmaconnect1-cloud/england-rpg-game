@@ -1,30 +1,39 @@
-# England RPG Game: map demo
+# Tally
 
-A zoomable, pannable pixel-art map of England, built as the foundation for a light-hearted medieval RPG.
-It uses real Natural Earth geography, procedural terrain that adds detail as you zoom in, and WebGL shaders.
-
-![overview](docs/overview.png)
-
-## Run it
+A visual first pass of a medieval merchant-empire sim: **Peaky Blinders in the Middle Ages**, starting in Boston, 1346.
+The pixel-art map of England is the living diorama; a parchment-and-ink HUD wraps it. Simulation is mocked — prices
+drift, ships ply their routes, news arrives — so the whole thing already *looks* like the finished game.
 
 ```bash
 npm install
 npm run dev        # opens http://localhost:5173
 ```
 
-It needs a browser with WebGL2 (any current Chrome, Edge, Firefox or Safari).
+Needs a browser with WebGL2. Click **Begin**, read the will, take the tally.
 
-| Control | Action |
+| Key | Action |
 | --- | --- |
-| Mouse wheel / trackpad pinch / touch pinch | Zoom toward the cursor |
-| Click-drag / touch drag | Pan |
-| WASD or arrow keys (Shift = faster) | Pan |
-| Q / E | Zoom out / in |
-| Home or 0 | Fit all of England |
-| H | Toggle all shaders on/off |
+| E R I C J L | Economy, Relations, Stores, Character, Journal, Ledger |
+| M | Map layers |
+| Space | Pause |
+| F1 | Help |
+| Esc | Close panel / menu |
+| ` | Debug clerk's scratch (`debug.trigger(...)` on `window.__tally`) |
+| Wheel / pinch | Zoom toward cursor |
+| Drag / WASD / arrows | Pan (Shift = faster) |
+| Q / − and = | Zoom out / in |
+| Home or 0 | Fit England |
+| Click a town or sail | Inspector |
 
-The panel on the right toggles each effect and sets the pixel size. The panel on the top left shows zoom, miles across the
-screen, LOD level, FPS, chunk-cache stats, and the lat/lon and realm under the cursor.
+All UI reads from one store (`src/state`). A drift ticker stands in for the sim. Audio is hooked (`playSfx('ui_click')`)
+but silent. Save slots are a visual mock. The Black Death is foreshadowed in rumours only.
+
+The map internals below are the same England renderer this sits on.
+
+---
+
+# Map demo (internals)
+
 
 ## Scale
 
@@ -55,7 +64,12 @@ src/
   camera/         camera (zoom-to-cursor, clamping, smoothing) + input (wheel, drag, pinch, keys)
   render/         WebGL2 renderer, chunk cache, shaders, palette, 2D overlay (icons/labels/scale bar)
   workers/        chunk generation worker pool
-  ui/             debug overlay, shader toggles
+  ui/             parchment HUD, panels, menus, debug clerk
+  state/          mock game-state store + drift ticker
+  content/        characters, towns, goods, news, events
+  lighting/       PixiJS ships, routes, lamps, weather, day/night
+  assets/         master palette, pixel icons, portraits, seals
+
 scripts/
   build-data.ts   Natural Earth -> public/data/*.bin (run once; output is committed)
   bench.ts, seams.ts, ascii.ts   generator speed/determinism/seam checks

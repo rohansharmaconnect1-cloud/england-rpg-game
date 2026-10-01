@@ -171,7 +171,7 @@ async function main() {
   const edgeCount = new Map<string, number>();
   const unitEdges: { code: string; a: [number, number]; b: [number, number] }[] = [];
   const unitRings = new Map<string, Ring[]>();
-  const inBox = (lon: number, lat: number) => lon > -11 && lon < 5 && lat > 48.5 && lat < 57.5;
+  const inBox = (lon: number, lat: number) => lon > -11 && lon < 8.5 && lat > 43.0 && lat < 57.5;
 
   for (const ft of mu.features) {
     const gu: string = ft.properties.GU_A3;

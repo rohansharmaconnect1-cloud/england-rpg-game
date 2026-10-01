@@ -5,8 +5,13 @@ export class CameraInput {
   private pointers = new Map<number, { x: number; y: number }>();
   private pinchDist = 0;
   private keys = new Set<string>();
+  private down: { x: number; y: number; t: number; moved: number } | null = null;
   mouseX = -1;
   mouseY = -1;
+  /** When false, pan/zoom/keys are ignored (menus, events). */
+  enabled = true;
+  /** Fired on a click that was not a drag or pinch. Screen CSS pixels. */
+  onClick: ((x: number, y: number) => void) | null = null;
 
   constructor(private readonly el: HTMLElement, private readonly cam: Camera) {
     el.addEventListener('wheel', this.onWheel, { passive: false });
@@ -22,6 +27,10 @@ export class CameraInput {
   }
 
   update(dt: number) {
+    if (!this.enabled) {
+      this.keys.clear();
+      return;
+    }
     let dx = 0;
     let dy = 0;
     if (this.keys.has('a') || this.keys.has('arrowleft')) dx += 1;
@@ -34,7 +43,7 @@ export class CameraInput {
       this.cam.panBy((dx / n) * speed, (dy / n) * speed);
     }
     if (this.keys.has('q') || this.keys.has('-')) this.cam.zoomBy(Math.exp(-dt * 2.5), this.cam.viewW / 2, this.cam.viewH / 2);
-    if (this.keys.has('e') || this.keys.has('=')) this.cam.zoomBy(Math.exp(dt * 2.5), this.cam.viewW / 2, this.cam.viewH / 2);
+    if (this.keys.has('=') || this.keys.has('+')) this.cam.zoomBy(Math.exp(dt * 2.5), this.cam.viewW / 2, this.cam.viewH / 2);
   }
 
   private local(e: { clientX: number; clientY: number }) {
@@ -43,6 +52,7 @@ export class CameraInput {
   }
 
   private onWheel = (e: WheelEvent) => {
+    if (!this.enabled) return;
     e.preventDefault();
     const p = this.local(e);
     const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
@@ -52,9 +62,15 @@ export class CameraInput {
   };
 
   private onDown = (e: PointerEvent) => {
+    if (!this.enabled) return;
     this.el.setPointerCapture(e.pointerId);
-    this.pointers.set(e.pointerId, this.local(e));
-    if (this.pointers.size === 2) this.pinchDist = this.pinchSpan();
+    const p = this.local(e);
+    this.pointers.set(e.pointerId, p);
+    if (this.pointers.size === 1) this.down = { x: p.x, y: p.y, t: performance.now(), moved: 0 };
+    if (this.pointers.size === 2) {
+      this.pinchDist = this.pinchSpan();
+      this.down = null;
+    }
     this.el.style.cursor = 'grabbing';
   };
 
@@ -62,8 +78,10 @@ export class CameraInput {
     const p = this.local(e);
     this.mouseX = p.x;
     this.mouseY = p.y;
+    if (!this.enabled) return;
     const prev = this.pointers.get(e.pointerId);
     if (!prev) return;
+    if (this.down) this.down.moved += Math.hypot(p.x - prev.x, p.y - prev.y);
     if (this.pointers.size === 1) {
       this.cam.panBy(p.x - prev.x, p.y - prev.y);
       this.pointers.set(e.pointerId, p);
@@ -79,13 +97,21 @@ export class CameraInput {
   };
 
   private onUp = (e: PointerEvent) => {
+    const p = this.local(e);
     this.pointers.delete(e.pointerId);
     if (this.pointers.size === 2) this.pinchDist = this.pinchSpan();
-    if (this.pointers.size === 0) this.el.style.cursor = 'grab';
+    if (this.pointers.size === 0) {
+      this.el.style.cursor = 'grab';
+      const d = this.down;
+      this.down = null;
+      if (this.enabled && d && d.moved < 6 && performance.now() - d.t < 500) this.onClick?.(p.x, p.y);
+    }
   };
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    const t = e.target as HTMLElement | null;
+    if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement || t?.isContentEditable) return;
+    if (!this.enabled) return;
     const k = e.key.toLowerCase();
     if (k.startsWith('arrow')) e.preventDefault();
     this.keys.add(k);
